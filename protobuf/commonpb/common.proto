@@ -1,0 +1,33 @@
+syntax = "proto3";
+package commonpb;
+option go_package = "github.com/anomalyco/arachne-c2/protobuf/commonpb";
+
+message Empty {}
+
+message Process {
+  int32 Pid = 1;
+  int32 Ppid = 2;
+  string Name = 3;
+  string Owner = 4;
+  string Path = 5;
+  string Args = 6;
+  string Session = 7;
+  string Architecture = 8;
+}
+
+message EnvVar {
+  string Key = 1;
+  string Value = 2;
+}
+
+message Response {
+  uint32 Err = 1;
+  string ErrMsg = 2;
+  bytes Data = 3;
+}
+
+message Request {
+  uint32 Opcode = 1;
+  bytes Data = 2;
+  int64 PeerID = 3;
+}

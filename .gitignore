@@ -1,0 +1,12 @@
+*.key
+*.priv
+*.pub
+operator.*
+implant.*
+vendor/
+dist/
+build/
+*.exe
+*.test
+*.out
+.DS_Store

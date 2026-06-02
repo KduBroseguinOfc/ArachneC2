@@ -1,0 +1,209 @@
+syntax = "proto3";
+package arachnepb;
+option go_package = "github.com/anomalyco/arachne-c2/protobuf/arachnepb";
+
+import "commonpb/common.proto";
+
+// Envelope wraps all messages sent between operator and implant
+message Envelope {
+  int64 ID = 1;
+  uint32 Type = 2;
+  bytes Data = 3;
+  bytes Signature = 4;
+  bytes SenderKey = 5;
+}
+
+// Register - First message implant sends after connecting
+message Register {
+  string Name = 1;
+  string Hostname = 2;
+  string UUID = 3;
+  string Username = 4;
+  string UID = 5;
+  string GID = 6;
+  string OS = 7;
+  string Arch = 8;
+  int32 PID = 9;
+  string Filename = 10;
+  string Version = 11;
+  int64 PeerID = 12;
+  string ActiveC2 = 13;
+  int64 ReconnectInterval = 14;
+  string Locale = 15;
+}
+
+// BeaconRegister - Used for async beacon mode
+message BeaconRegister {
+  string ID = 1;
+  int64 Interval = 2;
+  int64 Jitter = 3;
+  Register Register = 4;
+  int64 NextCheckin = 5;
+}
+
+// Ping - Keepalive / round-trip test
+message Ping {
+  int32 Nonce = 1;
+  commonpb.Response Response = 8;
+  commonpb.Request Request = 9;
+}
+
+// KillReq - Request implant to die
+message KillReq {
+  commonpb.Request Request = 9;
+}
+
+// PsReq - List processes
+message PsReq {
+  commonpb.Request Request = 9;
+}
+
+message Ps {
+  repeated commonpb.Process Processes = 1;
+  commonpb.Response Response = 9;
+}
+
+// ExecuteReq - Run a command
+message ExecuteReq {
+  string Path = 1;
+  repeated string Args = 2;
+  bool Output = 3;
+  commonpb.Request Request = 9;
+}
+
+message Execute {
+  uint32 Status = 1;
+  bytes Stdout = 2;
+  bytes Stderr = 3;
+  uint32 Pid = 4;
+  commonpb.Response Response = 9;
+}
+
+// LsReq - List directory
+message LsReq {
+  string Path = 1;
+  commonpb.Request Request = 9;
+}
+
+message FileInfo {
+  string Name = 1;
+  bool IsDir = 2;
+  int64 Size = 3;
+  int64 ModTime = 4;
+  string Mode = 5;
+  string Link = 6;
+}
+
+message Ls {
+  string Path = 1;
+  bool Exists = 2;
+  repeated FileInfo Files = 3;
+  commonpb.Response Response = 9;
+}
+
+// CdReq - Change directory
+message CdReq {
+  string Path = 1;
+  commonpb.Request Request = 9;
+}
+
+message PwdReq {
+  commonpb.Request Request = 9;
+}
+
+message Pwd {
+  string Path = 1;
+  commonpb.Response Response = 9;
+}
+
+// DownloadReq - Download file from implant
+message DownloadReq {
+  string Path = 1;
+  commonpb.Request Request = 9;
+}
+
+message Download {
+  string Path = 1;
+  bool Exists = 2;
+  bytes Data = 3;
+  commonpb.Response Response = 9;
+}
+
+// UploadReq - Upload file to implant
+message UploadReq {
+  string Path = 1;
+  bytes Data = 2;
+  bool Overwrite = 3;
+  commonpb.Request Request = 9;
+}
+
+message Upload {
+  string Path = 1;
+  int32 BytesWritten = 2;
+  commonpb.Response Response = 9;
+}
+
+// ScreenshotReq - Capture screen
+message ScreenshotReq {
+  commonpb.Request Request = 9;
+}
+
+message Screenshot {
+  bytes Data = 1;
+  commonpb.Response Response = 9;
+}
+
+// ShellReq - Open interactive shell
+message ShellReq {
+  string Path = 1;
+  bool EnablePTY = 2;
+  uint32 Pid = 3;
+  uint64 TunnelID = 8;
+  commonpb.Request Request = 9;
+}
+
+message Shell {
+  string Path = 1;
+  bool EnablePTY = 2;
+  uint32 Pid = 3;
+  uint64 TunnelID = 8;
+  commonpb.Response Response = 9;
+}
+
+// Tunnel - Stream tunnel
+message Tunnel {
+  uint64 TunnelID = 8;
+  string SessionID = 9;
+}
+
+message TunnelData {
+  bytes Data = 1;
+  bool Closed = 2;
+  uint64 Sequence = 3;
+  uint64 TunnelID = 8;
+  string SessionID = 9;
+}
+
+// Socks5 proxy
+message Socks {
+  uint64 TunnelID = 8;
+  string SessionID = 9;
+}
+
+message SocksData {
+  bytes Data = 1;
+  bool CloseConn = 2;
+  uint64 Sequence = 5;
+  uint64 TunnelID = 8;
+  commonpb.Request Request = 9;
+}
+
+// ExfilData - IPFS-based exfiltration reference
+message ExfilData {
+  string CID = 1;
+  bytes Key = 2;
+  string FileName = 3;
+  int64 Size = 4;
+  uint32 Type = 5;
+  commonpb.Response Response = 9;
+}
