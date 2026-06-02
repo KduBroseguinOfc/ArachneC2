@@ -7,8 +7,8 @@
 package rpcpb
 
 import (
-	arachnepb "github.com/anomalyco/arachne-c2/protobuf/arachnepb"
-	commonpb "github.com/anomalyco/arachne-c2/protobuf/commonpb"
+	arachnepb "github.com/portbuster1337/arachne-c2/protobuf/arachnepb"
+	commonpb "github.com/portbuster1337/arachne-c2/protobuf/commonpb"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"

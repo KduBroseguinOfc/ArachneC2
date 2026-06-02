@@ -10,3 +10,5 @@ build/
 *.test
 *.out
 .DS_Store
+implant/core/embedded_pubkey.go
+cmd/build-implant/build-implant

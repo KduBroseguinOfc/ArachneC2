@@ -1,6 +1,6 @@
 syntax = "proto3";
 package rpcpb;
-option go_package = "github.com/anomalyco/arachne-c2/protobuf/rpcpb";
+option go_package = "github.com/portbuster1337/arachne-c2/protobuf/rpcpb";
 
 import "commonpb/common.proto";
 import "arachnepb/arachne.proto";

