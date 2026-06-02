@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"time"
 
 	"github.com/libp2p/go-libp2p"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -12,20 +11,14 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
-
-	"github.com/libp2p/go-libp2p/p2p/discovery/routing"
-	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
-	"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
-	"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/client"
-
 	"github.com/multiformats/go-multiaddr"
 )
 
 const (
-	ArachneProtocolID   protocol.ID = "/arachne/1.0.0"
-	CommandTopicPrefix  string      = "arachne/cmd/"
-	BeaconTopicPrefix   string      = "arachne/beacon/"
-	TaskTopicPrefix     string      = "arachne/task/"
+	ArachneProtocolID  protocol.ID = "/arachne/1.0.0"
+	CommandTopicPrefix  string     = "arachne/cmd/"
+	BeaconTopicPrefix   string     = "arachne/beacon/"
+	TaskTopicPrefix     string     = "arachne/task/"
 )
 
 type NodeConfig struct {
@@ -33,19 +26,17 @@ type NodeConfig struct {
 	BootstrapPeers []peer.AddrInfo
 	EnableRelay    bool
 	EnableMDNS     bool
-	RelayV2        bool
 }
 
 type Node struct {
-	Host    host.Host
-	PubSub  *pubsub.PubSub
-	DHT     *routing.RoutingDiscovery
-	config  NodeConfig
-	topics  map[string]*pubsub.Topic
-	subs    map[string]*pubsub.Subscription
-	mu      sync.RWMutex
-	ctx     context.Context
-	cancel  context.CancelFunc
+	Host   host.Host
+	PubSub *pubsub.PubSub
+	config NodeConfig
+	topics map[string]*pubsub.Topic
+	subs   map[string]*pubsub.Subscription
+	mu     sync.RWMutex
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 func NewNode(ctx context.Context, cfg NodeConfig, opts ...libp2p.Option) (*Node, error) {
@@ -53,15 +44,11 @@ func NewNode(ctx context.Context, cfg NodeConfig, opts ...libp2p.Option) (*Node,
 
 	baseOpts := []libp2p.Option{
 		libp2p.ListenAddrStrings(cfg.ListenAddr),
-		libp2p.EnableAutoNATv2(),
 		libp2p.NATPortMap(),
-		libp2p.EnableHolePunching(),
 	}
 
 	if cfg.EnableRelay {
-		baseOpts = append(baseOpts,
-			libp2p.EnableRelay(),
-		)
+		baseOpts = append(baseOpts, libp2p.EnableRelay())
 	}
 
 	baseOpts = append(baseOpts, opts...)
@@ -72,15 +59,13 @@ func NewNode(ctx context.Context, cfg NodeConfig, opts ...libp2p.Option) (*Node,
 		return nil, fmt.Errorf("create libp2p host: %w", err)
 	}
 
-	ps, err := pubsub.NewGossipSub(ctx, h,
-		pubsub.WithMessageSignaturePolicy(pubsub.StrictNoSign),
-	)
+	ps, err := pubsub.NewGossipSub(ctx, h)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("create pubsub: %w", err)
 	}
 
-	node := &Node{
+	return &Node{
 		Host:   h,
 		PubSub: ps,
 		config: cfg,
@@ -88,16 +73,7 @@ func NewNode(ctx context.Context, cfg NodeConfig, opts ...libp2p.Option) (*Node,
 		subs:   make(map[string]*pubsub.Subscription),
 		ctx:    ctx,
 		cancel: cancel,
-	}
-
-	if cfg.RelayV2 {
-		_, err := relay.New(h)
-		if err != nil {
-			return nil, fmt.Errorf("enable relay v2: %w", err)
-		}
-	}
-
-	return node, nil
+	}, nil
 }
 
 func (n *Node) StartDiscovery() error {
@@ -106,14 +82,6 @@ func (n *Node) StartDiscovery() error {
 			continue
 		}
 	}
-
-	if n.config.EnableMDNS {
-		mdnsSvc := mdns.NewMdnsService(n.Host, "", &mdnsNotifee{h: n.Host})
-		if err := mdnsSvc.Start(); err != nil {
-			return fmt.Errorf("start mdns: %w", err)
-		}
-	}
-
 	return nil
 }
 
@@ -187,50 +155,10 @@ func (n *Node) ID() peer.ID {
 	return n.Host.ID()
 }
 
-func (n *Node) Peerstore() peerstore {
-	return n.Host.Peerstore()
-}
-
-type peerstore interface {
-	AddAddr(peer.ID, multiaddr.Multiaddr, time.Duration)
-}
-
-type mdnsNotifee struct {
-	h host.Host
-}
-
-func (m *mdnsNotifee) HandlePeerFound(pi peer.AddrInfo) {
-	if pi.ID == m.h.ID() {
-		return
+func (n *Node) AddrsWithID() []multiaddr.Multiaddr {
+	var addrs []multiaddr.Multiaddr
+	for _, a := range n.Host.Addrs() {
+		addrs = append(addrs, a.Encapsulate(multiaddr.StringCast("/p2p/" + n.Host.ID().String())))
 	}
-	m.h.Peerstore().AddAddr(pi.ID, pi.Addrs[0], time.Hour)
-}
-
-func ConnectToRelay(ctx context.Context, h host.Host, relayAddr string) error {
-	maddr, err := multiaddr.NewMultiaddr(relayAddr)
-	if err != nil {
-		return err
-	}
-	relayInfo, err := peer.AddrInfoFromP2pAddr(maddr)
-	if err != nil {
-		return err
-	}
-	if err := h.Connect(ctx, *relayInfo); err != nil {
-		return err
-	}
-	return nil
-}
-
-func DialThroughRelay(ctx context.Context, h host.Host, relayID peer.ID, targetID peer.ID, targetAddr multiaddr.Multiaddr) (network.Stream, error) {
-	_, err := client.Reserve(ctx, h, relayID)
-	if err != nil {
-		return nil, fmt.Errorf("reserve relay: %w", err)
-	}
-	addr, err := multiaddr.NewMultiaddr(fmt.Sprintf("/p2p/%s/p2p-circuit/p2p/%s", relayID, targetID))
-	if err != nil {
-		return nil, err
-	}
-
-	pi := peer.AddrInfo{ID: targetID, Addrs: []multiaddr.Multiaddr{addr}}
-	return h.NewStream(ctx, pi.ID, ArachneProtocolID)
+	return addrs
 }
