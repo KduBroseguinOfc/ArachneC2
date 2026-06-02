@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -113,6 +114,45 @@ func NewEpochNow() int64 {
 type ReadWriter struct {
 	io.Reader
 	io.Writer
+}
+
+func LoadOrGenerateOperatorKey(path string) (*OperatorKey, error) {
+	data, err := os.ReadFile(path)
+	if err == nil {
+		priv, err := LoadPrivateKey(data)
+		if err != nil {
+			return nil, fmt.Errorf("load private key from %s: %w", path, err)
+		}
+		pub := priv.GetPublic()
+		pid, err := peer.IDFromPublicKey(pub)
+		if err != nil {
+			return nil, fmt.Errorf("peer id from loaded key: %w", err)
+		}
+		return &OperatorKey{
+			KeyPair: KeyPair{PrivateKey: priv, PublicKey: pub},
+			PeerID:  pid,
+		}, nil
+	}
+
+	if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("read key file %s: %w", path, err)
+	}
+
+	key, err := GenerateOperatorKey()
+	if err != nil {
+		return nil, err
+	}
+
+	marshaled, err := MarshalPrivateKey(key.PrivateKey)
+	if err != nil {
+		return nil, fmt.Errorf("marshal key: %w", err)
+	}
+
+	if err := os.WriteFile(path, marshaled, 0600); err != nil {
+		return nil, fmt.Errorf("write key to %s: %w", path, err)
+	}
+
+	return key, nil
 }
 
 func (k *OperatorKey) HexPeerID() string {
